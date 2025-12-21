@@ -47,6 +47,7 @@ jobs:
             platform: Linux
             arch: arm64
 
+          # Linux-musl 专属构建配置
           - os: ubuntu-latest
             platform: Linux-musl
             arch: x64
@@ -80,25 +81,29 @@ jobs:
           build-cache: true
           package-cache: true
 
-      - name: Install musl toolchain
+      # 仅为 Linux-musl 安装 musl 工具链（修正包名问题）
+      - name: Install musl toolchain (Linux-musl only)
         if: matrix.platform == 'Linux-musl'
         run: |
-          # 安装完整的musl交叉编译工具链
           sudo apt-get update
-          sudo apt-get install -y musl-tools gcc-musl
-          # 创建符号链接确保xmake能找到
-          sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+          # Ubuntu 官方源中仅存在 musl-tools 包（包含 musl-gcc）
+          sudo apt-get install -y musl-tools
+          # 验证 musl-gcc 安装成功并输出版本
+          musl-gcc --version
+          # 创建通用命名链接，提升兼容性
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
 
       - name: Build & Package Project
         run: |
+          # 针对 Linux-musl 配置专属编译参数
           if [ "${{ matrix.platform }}" = "Linux-musl" ]; then
-            # 明确指定编译器路径
-            xmake f --toolchain=musl --arch=x86_64 --cc=/usr/bin/musl-gcc
+            xmake f --arch=x86_64 --cc=musl-gcc --cxx=musl-g++
+            xmake clean
           fi
+          # 执行编译打包
           xmake package --yes --verbose
 
       - name: Upload Artifact
-        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.platform }}-${{ matrix.arch }}
@@ -110,6 +115,7 @@ jobs:
           compression-level: 9
 
   release:
+    # 根据触发方式决定是否上传到 Release
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 
         (github.event.inputs.upload_to_release == 'true' || github.event_name == 'push')
     name: Upload to GitHub Release
