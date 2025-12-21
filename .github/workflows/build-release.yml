@@ -114,12 +114,9 @@ jobs:
               --plat=linux \
               --arch=${ARCH_PURE} \
               --toolchain=musl \
-              --static \  # 修正：布尔型参数，仅写 --static 即可启用
               --mode=release \
               --ldflags="-static -static-libgcc -static-libstdc++" \
               --linkdirs="/usr/lib/aarch64-linux-musl:/usr/lib/x86_64-linux-musl"
-            # 兜底：通过 set_config 强制启用静态链接（防止工具链未识别 --static）
-            xmake set_config --global static=true
           else
             # 原有普通编译逻辑
             xmake f --yes --mode=release
