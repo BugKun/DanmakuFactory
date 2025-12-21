@@ -35,7 +35,6 @@ jobs:
 
     env:
       PROJECT_NAME: ${{ github.event.repository.name }}
-      DISABLE_CACHE: true
 
     strategy:
       matrix:
@@ -82,9 +81,6 @@ jobs:
         with:
           xmake-version: ~3
           actions-cache-folder: ".xmake-cache"
-          build-cache-key: "${{ matrix.platform }}_${{ matrix.arch }}"
-          build-cache: true
-          package-cache: true
 
       - name: Install and setup musl toolchain
         if: matrix.platform == 'Linux-musl'
