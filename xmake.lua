@@ -21,6 +21,7 @@ target("cli")
         add_cflags("-static", "-fuse-ld=musl")
         add_ldflags("-static", "-fuse-ld=musl")
         add_cxflags("-static", "-fuse-ld=musl")
+    end
 
     add_packages("pcre2")
     add_files("src/*.c", "src/**/*.c")
