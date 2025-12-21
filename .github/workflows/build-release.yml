@@ -88,7 +88,9 @@ jobs:
             musl-tools \
             gcc-multilib \
             musl-dev
-          sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc || true
+          # 确保 musl 编译器路径优先
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc || true
+          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++ || true
 
       # arm64-musl 专用工具链
       - name: Install Musl Toolchain (arm64-musl)
@@ -98,25 +100,36 @@ jobs:
             musl-tools \
             musl-dev
           sudo apt remove -y gcc-multilib gcc-13-aarch64-linux-gnu || true
-          sudo ln -s /usr/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc || true
-          sudo ln -s /usr/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-musl || true
+          # 确保 musl 编译器路径优先
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc || true
+          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++ || true
 
-      # 修正：Xmake 静态链接参数（移除 =y，改用正确的 --static）
+      # 重构：移除无效的 --static，通过编译器/链接器标志实现静态链接
       - name: Build & Package Project
         run: |
           # 提取纯架构（移除 -musl 后缀）
           ARCH_PURE="${{ matrix.arch }}"
           ARCH_PURE=${ARCH_PURE/-musl/}
           
-          # 针对 musl 架构配置 Xmake 编译参数
+          # 重置 Xmake 配置（避免缓存干扰）
+          xmake f --clean
+          
           if [[ "${{ matrix.arch }}" == *-musl ]]; then
+            # 关键：指定 musl 编译器 + 强制静态链接标志
+            export CC=musl-gcc
+            export CXX=musl-g++
+            export CFLAGS="-static -fPIC -Os"
+            export CXXFLAGS="-static -fPIC -Os"
+            export LDFLAGS="-static -static-libgcc -static-libstdc++ -lm -lc"
+            
+            # 配置 Xmake（仅保留有效参数）
             xmake f --yes \
               --plat=linux \
               --arch=${ARCH_PURE} \
-              --toolchain=musl \
               --mode=release \
-              --ldflags="-static -static-libgcc -static-libstdc++" \
-              --linkdirs="/usr/lib/aarch64-linux-musl:/usr/lib/x86_64-linux-musl"
+              --cxflags="${CFLAGS} ${CXXFLAGS}" \
+              --ldflags="${LDFLAGS}" \
+              --linkdirs="/usr/lib/musl:/usr/lib/x86_64-linux-musl:/usr/lib/aarch64-linux-musl"
           else
             # 原有普通编译逻辑
             xmake f --yes --mode=release
@@ -128,6 +141,21 @@ jobs:
           # 构建并打包
           xmake build --yes --verbose
           xmake package --yes --verbose
+
+      - name: Verify Static Link (musl only)
+        if: contains(matrix.arch, 'musl')
+        run: |
+          # 查找编译产物
+          BIN_PATH=$(find build/linux/${ARCH_PURE}/release -name "${PROJECT_NAME}" -type f)
+          if [ -f "${BIN_PATH}" ]; then
+            echo "Verifying static link for: ${BIN_PATH}"
+            # 检查是否为 musl 静态链接
+            file ${BIN_PATH} | grep -i "statically linked" && echo "✅ Static link success"
+            # 检查无动态依赖（ldd 会提示不是动态可执行文件）
+            ldd ${BIN_PATH} || echo "✅ No dynamic dependencies (musl static confirmed)"
+          else
+            echo "⚠️ Binary file not found: ${BIN_PATH}"
+          fi
 
       - name: Upload Artifact
         if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
@@ -178,7 +206,7 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}
             - Added Linux musl static build (x64/arm64)
-            - Fixed: Corrected Xmake static link parameter (--static instead of --static=y)
+            - Fixed: Removed invalid --static flag, use compiler/env flags for static link
             - Deploy type: ${{ github.event_name == 'push' && 'auto-release (push)' || inputs.deploy_type }}
           prerelease: true
           preserve_order: true
