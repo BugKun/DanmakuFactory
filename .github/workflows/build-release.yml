@@ -17,7 +17,7 @@ on:
       deploy_type:
         description: '部署类型'
         required: true
-        default: 'release'
+        default: 'artifact_only'
         type: choice
         options:
           - artifact_only
@@ -80,7 +80,7 @@ jobs:
           build-cache: true
           package-cache: true
 
-      # 修正：分架构安装 musl 工具链，解决依赖冲突
+      # 修正：x64-musl 专用工具链（保留 gcc-multilib）
       - name: Install Musl Toolchain (x64-musl)
         if: matrix.arch == 'x64-musl'
         run: |
@@ -88,47 +88,52 @@ jobs:
             musl-tools \
             gcc-multilib \
             musl-dev
-          # 修复 x64 musl 链接器路径（可选）
+          # 确保 x64 musl 编译器路径正确
           sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc || true
 
+      # 修正：arm64-musl 专用工具链（仅安装基础 musl，移除不存在的包）
       - name: Install Musl Toolchain (arm64-musl)
         if: matrix.arch == 'arm64-musl'
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
             musl-tools \
-            gcc-aarch64-linux-gnu \
-            aarch64-linux-gnu-musl-dev \
             musl-dev
-          # 移除冲突的 gcc-multilib（如果已安装）
-          sudo apt remove -y gcc-multilib || true
-          # 配置 arm64 musl 工具链软链接
-          sudo ln -s /usr/bin/aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-musl-gcc || true
-          sudo ln -s /usr/aarch64-linux-gnu/lib /usr/lib/aarch64-linux-musl || true
+          # 移除冲突的 gcc-multilib（如果存在）
+          sudo apt remove -y gcc-multilib gcc-13-aarch64-linux-gnu || true
+          # 配置 arm64 musl 编译器路径（本机构建，无需交叉编译）
+          sudo ln -s /usr/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc || true
+          # 确保 musl 库路径正确
+          sudo ln -s /usr/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-musl || true
 
-      # 修正：添加 --yes 参数自动安装依赖，解决交互式询问问题
+      # 修正：Build & Package 逻辑（适配 arm64-musl 本机构建）
       - name: Build & Package Project
         run: |
           # 提取纯架构（移除 -musl 后缀）
           ARCH_PURE="${{ matrix.arch }}"
           ARCH_PURE=${ARCH_PURE/-musl/}
           
-          # 针对 musl 架构配置 Xmake 编译参数（添加 --yes 自动确认依赖）
+          # 针对 musl 架构配置 Xmake 编译参数
           if [[ "${{ matrix.arch }}" == *-musl ]]; then
+            # 强制静态链接 + 适配 musl 本机构建
             xmake f --yes \
               --plat=linux \
               --arch=${ARCH_PURE} \
               --toolchain=musl \
               --static=y \
-              --mode=release
+              --mode=release \
+              # 禁用动态链接，强制静态
+              --ldflags="-static -static-libgcc -static-libstdc++" \
+              # 指定 musl 库路径
+              --linkdirs="/usr/lib/aarch64-linux-musl:/usr/lib/x86_64-linux-musl"
           else
-            # 原有普通编译逻辑（同样添加 --yes）
+            # 原有普通编译逻辑
             xmake f --yes --mode=release
           fi
           
-          # 显式安装依赖（确保无交互）
+          # 显式安装依赖
           xmake require --yes
           
-          # 执行构建并打包（添加 --yes）
+          # 构建并打包
           xmake build --yes --verbose
           xmake package --yes --verbose
 
@@ -181,7 +186,7 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}
             - Added Linux musl static build (x64/arm64)
-            - Fixed dependency conflict between gcc-multilib and aarch64-linux-gnu
+            - Fixed: Removed non-existent aarch64-linux-gnu-musl-dev package
             - Deploy type: ${{ github.event_name == 'push' && 'auto-release (push)' || inputs.deploy_type }}
           prerelease: true
           preserve_order: true
