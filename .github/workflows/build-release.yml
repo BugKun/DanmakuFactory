@@ -87,7 +87,7 @@ jobs:
           # 安装完整的musl交叉编译工具链
           sudo apt-get update
           sudo apt-get install -y musl-tools musl
-          xmake f --musl=true --verbose
+          export XMAKE_BUILD_MUSL=1
 
       - name: Build & Package Project
         run: xmake package --yes --verbose
