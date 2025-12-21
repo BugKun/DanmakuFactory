@@ -35,6 +35,7 @@ jobs:
 
     env:
       PROJECT_NAME: ${{ github.event.repository.name }}
+      DISABLE_CACHE: true
 
     strategy:
       matrix:
