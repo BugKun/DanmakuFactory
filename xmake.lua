@@ -12,9 +12,10 @@ target("cli")
     set_languages("c11")
     set_version("2.0.0", {build = "%Y%m%d%H%M"})
 
-    add_cflags("-static", "-fuse-ld=musl")  -- 静态链接musl-libc
-    add_ldflags("-static", "-fuse-ld=musl")  -- 静态链接musl-libc的链接器标志
-    add_cxflags("-static", "-fuse-ld=musl")  -- 如果你的项目是C++项目，使用add_cxflags
+    if has_config("musl") then
+        add_cflags("-static", "-fuse-ld=musl")
+        add_ldflags("-static", "-fuse-ld=musl")
+        add_cxflags("-static", "-fuse-ld=musl")
 
     add_packages("pcre2")
     add_files("src/*.c", "src/**/*.c")
