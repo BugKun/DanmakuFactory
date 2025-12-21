@@ -35,6 +35,9 @@ jobs:
 
     env:
       PROJECT_NAME: ${{ github.event.repository.name }}
+      # 新增：强制 Xmake 非交互模式
+      XMAKE_COLORTERM: none
+      XMAKE_INTERACTIVE: 0
 
     strategy:
       matrix:
@@ -88,7 +91,6 @@ jobs:
             musl-tools \
             gcc-multilib \
             musl-dev
-          # 确保 musl 编译器路径优先
           sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc || true
           sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++ || true
 
@@ -100,11 +102,21 @@ jobs:
             musl-tools \
             musl-dev
           sudo apt remove -y gcc-multilib gcc-13-aarch64-linux-gnu || true
-          # 确保 musl 编译器路径优先
           sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc || true
           sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++ || true
 
-      # 重构：移除无效的 --static，通过编译器/链接器标志实现静态链接
+      # 新增：提前无交互安装 pcre2（静态版本，适配 musl）
+      - name: Preinstall Dependencies (pcre2)
+        if: contains(matrix.arch, 'musl')
+        run: |
+          # 强制更新 xmake-repo 仓库（确保包索引最新）
+          xmake repo --update
+          # 显式安装 pcre2，指定静态版本 + 无交互
+          xmake install -y --static pcre2
+          # 验证 pcre2 安装成功
+          xmake show -l pcre2 || echo "pcre2 installed successfully"
+
+      # 重构：强化无交互逻辑 + 提前安装依赖
       - name: Build & Package Project
         run: |
           # 提取纯架构（移除 -musl 后缀）
@@ -120,26 +132,27 @@ jobs:
             export CXX=musl-g++
             export CFLAGS="-static -fPIC -Os"
             export CXXFLAGS="-static -fPIC -Os"
-            export LDFLAGS="-static -static-libgcc -static-libstdc++ -lm -lc"
+            export LDFLAGS="-static -static-libgcc -static-libstdc++ -lm -lc -lpcre2-8"
             
-            # 配置 Xmake（仅保留有效参数）
+            # 配置 Xmake（仅保留有效参数 + 强制非交互）
             xmake f --yes \
               --plat=linux \
               --arch=${ARCH_PURE} \
               --mode=release \
               --cxflags="${CFLAGS} ${CXXFLAGS}" \
               --ldflags="${LDFLAGS}" \
-              --linkdirs="/usr/lib/musl:/usr/lib/x86_64-linux-musl:/usr/lib/aarch64-linux-musl"
+              --linkdirs="/usr/lib/musl:/usr/lib/x86_64-linux-musl:/usr/lib/aarch64-linux-musl" \
+              --pkg_config=true
           else
             # 原有普通编译逻辑
             xmake f --yes --mode=release
           fi
           
-          # 显式安装依赖
-          xmake require --yes
+          # 再次确保依赖安装（双重保险）
+          xmake require --yes --verbose
           
-          # 构建并打包
-          xmake build --yes --verbose
+          # 构建并打包（强制非交互）
+          xmake build --yes --verbose --no-interactive
           xmake package --yes --verbose
 
       - name: Verify Static Link (musl only)
@@ -206,7 +219,7 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}
             - Added Linux musl static build (x64/arm64)
-            - Fixed: Removed invalid --static flag, use compiler/env flags for static link
+            - Fixed: Preinstall pcre2 statically to avoid interactive prompt
             - Deploy type: ${{ github.event_name == 'push' && 'auto-release (push)' || inputs.deploy_type }}
           prerelease: true
           preserve_order: true
