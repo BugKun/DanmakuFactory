@@ -35,9 +35,13 @@ jobs:
 
     env:
       PROJECT_NAME: ${{ github.event.repository.name }}
-      # 新增：强制 Xmake 非交互模式
-      XMAKE_COLORTERM: none
+      # 全局禁用 Xmake 交互 + 强制使用系统库
       XMAKE_INTERACTIVE: 0
+      XMAKE_COLORTERM: none
+      XMAKE_PACKAGE_ENABLE: 0
+      # 指定系统库路径
+      C_INCLUDE_PATH: /usr/include:/usr/include/musl
+      LIBRARY_PATH: /usr/lib:/usr/lib/musl:/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu
 
     strategy:
       matrix:
@@ -81,60 +85,56 @@ jobs:
           actions-cache-folder: ".xmake-cache"
           build-cache-key: "${{ matrix.platform }}_${{ matrix.arch }}"
           build-cache: true
-          package-cache: true
+          package-cache: false  # 禁用包缓存，强制用系统库
 
-      # x64-musl 专用工具链
-      - name: Install Musl Toolchain (x64-musl)
+      # x64-musl 专用工具链 + 系统级 pcre2 静态库
+      - name: Install Musl & System Dependencies (x64-musl)
         if: matrix.arch == 'x64-musl'
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
-            musl-tools \
-            gcc-multilib \
-            musl-dev
-          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc || true
-          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++ || true
+            musl-tools gcc-multilib musl-dev \
+            libpcre2-dev libpcre2-8-0  # 系统级 pcre2 静态库（.a）
+          # 强制 musl 编译器优先级
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc
+          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++
+          # 复制 pcre2 静态库到 musl 路径（确保能找到）
+          sudo cp /usr/lib/x86_64-linux-gnu/libpcre2-8.a /usr/lib/x86_64-linux-musl/ || true
 
-      # arm64-musl 专用工具链
-      - name: Install Musl Toolchain (arm64-musl)
+      # arm64-musl 专用工具链 + 系统级 pcre2 静态库
+      - name: Install Musl & System Dependencies (arm64-musl)
         if: matrix.arch == 'arm64-musl'
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
-            musl-tools \
-            musl-dev
+            musl-tools musl-dev \
+            libpcre2-dev libpcre2-8-0  # 系统级 pcre2 静态库
           sudo apt remove -y gcc-multilib gcc-13-aarch64-linux-gnu || true
-          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc || true
-          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++ || true
+          # 强制 musl 编译器优先级
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc
+          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++
+          # 复制 pcre2 静态库到 musl 路径
+          sudo cp /usr/lib/aarch64-linux-gnu/libpcre2-8.a /usr/lib/aarch64-linux-musl/ || true
 
-      # 新增：提前无交互安装 pcre2（静态版本，适配 musl）
-      - name: Preinstall Dependencies (pcre2)
-        if: contains(matrix.arch, 'musl')
-        run: |
-          # 强制更新 xmake-repo 仓库（确保包索引最新）
-          xmake repo --update
-          # 显式安装 pcre2，指定静态版本 + 无交互
-          xmake install -y --static pcre2
-          # 验证 pcre2 安装成功
-          xmake show -l pcre2 || echo "pcre2 installed successfully"
-
-      # 重构：强化无交互逻辑 + 提前安装依赖
+      # 核心：完全绕开 Xmake 包管理，强制使用系统库构建
       - name: Build & Package Project
         run: |
-          # 提取纯架构（移除 -musl 后缀）
+          # 提取纯架构
           ARCH_PURE="${{ matrix.arch }}"
           ARCH_PURE=${ARCH_PURE/-musl/}
           
-          # 重置 Xmake 配置（避免缓存干扰）
+          # 彻底清理 Xmake 配置和缓存
+          xmake clean -a
           xmake f --clean
           
           if [[ "${{ matrix.arch }}" == *-musl ]]; then
-            # 关键：指定 musl 编译器 + 强制静态链接标志
+            # 强制指定编译器和静态链接标志
             export CC=musl-gcc
             export CXX=musl-g++
-            export CFLAGS="-static -fPIC -Os"
-            export CXXFLAGS="-static -fPIC -Os"
+            export CFLAGS="-static -fPIC -Os -I/usr/include/pcre2"
+            export CXXFLAGS="-static -fPIC -Os -I/usr/include/pcre2"
+            # 显式链接系统 pcre2 静态库
             export LDFLAGS="-static -static-libgcc -static-libstdc++ -lm -lc -lpcre2-8"
             
-            # 配置 Xmake（仅保留有效参数 + 强制非交互）
+            # 配置 Xmake：禁用包自动安装 + 仅用系统库
             xmake f --yes \
               --plat=linux \
               --arch=${ARCH_PURE} \
@@ -142,32 +142,31 @@ jobs:
               --cxflags="${CFLAGS} ${CXXFLAGS}" \
               --ldflags="${LDFLAGS}" \
               --linkdirs="/usr/lib/musl:/usr/lib/x86_64-linux-musl:/usr/lib/aarch64-linux-musl" \
-              --pkg_config=true
+              --includedirs="/usr/include/pcre2:/usr/include/musl" \
+              --pkg_searchdirs="" \  # 禁用包搜索，仅用系统库
+              --no-packages  # 核心：禁用 Xmake 自动安装包
           else
-            # 原有普通编译逻辑
+            # 原有逻辑（glibc）
             xmake f --yes --mode=release
           fi
           
-          # 再次确保依赖安装（双重保险）
-          xmake require --yes --verbose
-          
-          # 构建并打包（强制非交互）
-          xmake build --yes --verbose --no-interactive
+          # 构建（禁用所有包相关逻辑）
+          xmake build --yes --verbose --no-packages
           xmake package --yes --verbose
 
       - name: Verify Static Link (musl only)
         if: contains(matrix.arch, 'musl')
         run: |
-          # 查找编译产物
           BIN_PATH=$(find build/linux/${ARCH_PURE}/release -name "${PROJECT_NAME}" -type f)
           if [ -f "${BIN_PATH}" ]; then
-            echo "Verifying static link for: ${BIN_PATH}"
-            # 检查是否为 musl 静态链接
+            echo "✅ Binary found: ${BIN_PATH}"
             file ${BIN_PATH} | grep -i "statically linked" && echo "✅ Static link success"
-            # 检查无动态依赖（ldd 会提示不是动态可执行文件）
             ldd ${BIN_PATH} || echo "✅ No dynamic dependencies (musl static confirmed)"
+            # 验证包含 pcre2 静态依赖
+            nm ${BIN_PATH} | grep -i pcre2_ && echo "✅ pcre2 linked statically"
           else
-            echo "⚠️ Binary file not found: ${BIN_PATH}"
+            echo "❌ Binary not found!"
+            exit 1
           fi
 
       - name: Upload Artifact
@@ -219,7 +218,7 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}
             - Added Linux musl static build (x64/arm64)
-            - Fixed: Preinstall pcre2 statically to avoid interactive prompt
+            - Fixed: Use system pcre2 static lib (bypass Xmake package manager)
             - Deploy type: ${{ github.event_name == 'push' && 'auto-release (push)' || inputs.deploy_type }}
           prerelease: true
           preserve_order: true
