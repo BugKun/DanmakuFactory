@@ -17,7 +17,7 @@ on:
       deploy_type:
         description: '部署类型'
         required: true
-        default: 'artifact_only'
+        default: 'release'
         type: choice
         options:
           - artifact_only
@@ -95,28 +95,31 @@ jobs:
             ln -s /usr/bin/aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-musl-gcc || true
           fi
 
-      # 修正：用 Bash 替换处理 arch，移除 GitHub Actions 表达式的 replace 函数
+      # 修正：添加 --yes 参数自动安装依赖，解决交互式询问问题
       - name: Build & Package Project
         run: |
           # 提取纯架构（移除 -musl 后缀）
           ARCH_PURE="${{ matrix.arch }}"
           ARCH_PURE=${ARCH_PURE/-musl/}
           
-          # 针对 musl 架构配置 Xmake 编译参数
+          # 针对 musl 架构配置 Xmake 编译参数（添加 --yes 自动确认依赖）
           if [[ "${{ matrix.arch }}" == *-musl ]]; then
-            xmake f \
+            xmake f --yes \
               --plat=linux \
               --arch=${ARCH_PURE} \
               --toolchain=musl \
               --static=y \
               --mode=release
           else
-            # 原有普通编译逻辑
-            xmake f --mode=release
+            # 原有普通编译逻辑（同样添加 --yes）
+            xmake f --yes --mode=release
           fi
           
-          # 执行构建并打包
-          xmake build --verbose
+          # 显式安装依赖（确保无交互）
+          xmake require --yes
+          
+          # 执行构建并打包（添加 --yes）
+          xmake build --yes --verbose
           xmake package --yes --verbose
 
       - name: Upload Artifact
