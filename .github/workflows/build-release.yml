@@ -52,7 +52,7 @@ jobs:
         run: |
           # 安装完整的musl交叉编译工具链
           sudo apt-get update
-          sudo apt-get install -y musl-tools gcc-musl musl
+          sudo apt-get install -y musl-tools musl
 
       - name: Build & Package Project
         run: xmake package --yes --verbose
