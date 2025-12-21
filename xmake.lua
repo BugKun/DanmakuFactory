@@ -4,7 +4,7 @@ add_rules("mode.debug", "mode.release")
 
 set_project(PROJECT_NAME)
 
--- 针对 musl 平台配置 pcre2 静态链接
+-- 为musl配置静态依赖
 add_requires("pcre2", {
     config = {
         shared = not (is_plat("linux") and get_config("toolchain") == "musl")
@@ -20,11 +20,13 @@ target("cli")
     add_packages("pcre2")
     add_files("src/*.c", "src/**/*.c")
 
-    -- musl 平台静态编译配置
+    -- musl静态编译配置
     if is_plat("linux") and get_config("toolchain") == "musl" then
-        set_toolchains("musl")
-        add_cflags("-static")
-        add_ldflags("-static")
+        -- 手动指定musl工具链参数
+        set_toolchains("gcc")  -- 使用gcc兼容模式
+        add_cflags("-static", "-fPIC")
+        add_ldflags("-static", "-L/usr/lib/musl/lib")
+        add_linkdirs("/usr/lib/musl")
         set_targetdir("build/musl")
     end
 

@@ -80,21 +80,25 @@ jobs:
           build-cache: true
           package-cache: true
 
-      - name: Install musl tools
+      - name: Install musl toolchain
         if: matrix.platform == 'Linux-musl'
         run: |
+          # 安装完整的musl交叉编译工具链
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-tools gcc-musl
+          # 创建符号链接确保xmake能找到
+          sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
 
       - name: Build & Package Project
         run: |
           if [ "${{ matrix.platform }}" = "Linux-musl" ]; then
-            xmake f --toolchain=musl --arch=x86_64
+            # 明确指定编译器路径
+            xmake f --toolchain=musl --arch=x86_64 --cc=/usr/bin/musl-gcc
           fi
           xmake package --yes --verbose
 
       - name: Upload Artifact
-        # 始终上传 Artifact（方便后续处理或下载）
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.platform }}-${{ matrix.arch }}
@@ -106,7 +110,6 @@ jobs:
           compression-level: 9
 
   release:
-    # 根据输入参数决定是否执行 release 步骤
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 
         (github.event.inputs.upload_to_release == 'true' || github.event_name == 'push')
     name: Upload to GitHub Release
