@@ -80,7 +80,7 @@ jobs:
           build-cache: true
           package-cache: true
 
-      # 修正：x64-musl 专用工具链（保留 gcc-multilib）
+      # x64-musl 专用工具链
       - name: Install Musl Toolchain (x64-musl)
         if: matrix.arch == 'x64-musl'
         run: |
@@ -88,24 +88,20 @@ jobs:
             musl-tools \
             gcc-multilib \
             musl-dev
-          # 确保 x64 musl 编译器路径正确
           sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc || true
 
-      # 修正：arm64-musl 专用工具链（仅安装基础 musl，移除不存在的包）
+      # arm64-musl 专用工具链
       - name: Install Musl Toolchain (arm64-musl)
         if: matrix.arch == 'arm64-musl'
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
             musl-tools \
             musl-dev
-          # 移除冲突的 gcc-multilib（如果存在）
           sudo apt remove -y gcc-multilib gcc-13-aarch64-linux-gnu || true
-          # 配置 arm64 musl 编译器路径（本机构建，无需交叉编译）
           sudo ln -s /usr/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc || true
-          # 确保 musl 库路径正确
           sudo ln -s /usr/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-musl || true
 
-      # 修正：Build & Package 逻辑（适配 arm64-musl 本机构建）
+      # 修正：Xmake 静态链接参数（移除 =y，改用正确的 --static）
       - name: Build & Package Project
         run: |
           # 提取纯架构（移除 -musl 后缀）
@@ -114,17 +110,16 @@ jobs:
           
           # 针对 musl 架构配置 Xmake 编译参数
           if [[ "${{ matrix.arch }}" == *-musl ]]; then
-            # 强制静态链接 + 适配 musl 本机构建
             xmake f --yes \
               --plat=linux \
               --arch=${ARCH_PURE} \
               --toolchain=musl \
-              --static=y \
+              --static \  # 修正：布尔型参数，仅写 --static 即可启用
               --mode=release \
-              # 禁用动态链接，强制静态
               --ldflags="-static -static-libgcc -static-libstdc++" \
-              # 指定 musl 库路径
               --linkdirs="/usr/lib/aarch64-linux-musl:/usr/lib/x86_64-linux-musl"
+            # 兜底：通过 set_config 强制启用静态链接（防止工具链未识别 --static）
+            xmake set_config --global static=true
           else
             # 原有普通编译逻辑
             xmake f --yes --mode=release
@@ -186,7 +181,7 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}
             - Added Linux musl static build (x64/arm64)
-            - Fixed: Removed non-existent aarch64-linux-gnu-musl-dev package
+            - Fixed: Corrected Xmake static link parameter (--static instead of --static=y)
             - Deploy type: ${{ github.event_name == 'push' && 'auto-release (push)' || inputs.deploy_type }}
           prerelease: true
           preserve_order: true
