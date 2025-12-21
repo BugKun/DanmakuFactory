@@ -14,14 +14,14 @@ on:
       - "src/**/*.h"
   workflow_dispatch:
     inputs:
-      deploy_type:
-        description: '部署类型'
+      upload_to_release:
+        description: 'Whether to upload to GitHub Release (true/false)'
         required: true
-        default: 'artifact_only'
+        default: 'true'
         type: choice
         options:
-          - artifact_only
-          - release
+          - true
+          - false
 
 concurrency:
   group: "build-release"
@@ -35,39 +35,34 @@ jobs:
 
     env:
       PROJECT_NAME: ${{ github.event.repository.name }}
-      # 全局环境变量
-      XMAKE_INTERACTIVE: 0
-      XMAKE_COLORTERM: none
-      C_INCLUDE_PATH: /usr/include:/usr/include/musl
-      LIBRARY_PATH: /usr/lib:/usr/lib/musl:/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu
 
     strategy:
       matrix:
         include:
-          # 原有 Linux 版本（glibc）
           - os: ubuntu-latest
             platform: Linux
             arch: x64
+
           - os: ubuntu-24.04-arm
             platform: Linux
             arch: arm64
-          # 新增 Linux musl 版本（静态编译）
+
           - os: ubuntu-latest
-            platform: Linux
-            arch: x64-musl
-          - os: ubuntu-24.04-arm
-            platform: Linux
-            arch: arm64-musl
-          # 原有 macOS/Windows 版本
+            platform: Linux-musl
+            arch: x64
+
           - os: macos-15-intel
             platform: macOS
             arch: Intel
+
           - os: macos-latest
             platform: macOS
             arch: arm64
+
           - os: windows-latest
             platform: Windows
             arch: x64
+
           - os: windows-11-arm
             platform: Windows
             arch: arm64
@@ -85,84 +80,21 @@ jobs:
           build-cache: true
           package-cache: true
 
-      # x64-musl 专用工具链
-      - name: Install Musl Toolchain (x64-musl)
-        if: matrix.arch == 'x64-musl'
+      - name: Install musl tools
+        if: matrix.platform == 'Linux-musl'
         run: |
-          sudo apt update && sudo apt install -y --no-install-recommends \
-            musl-tools gcc-multilib musl-dev
-          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc
-          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
-      # arm64-musl 专用工具链
-      - name: Install Musl Toolchain (arm64-musl)
-        if: matrix.arch == 'arm64-musl'
-        run: |
-          sudo apt update && sudo apt install -y --no-install-recommends \
-            musl-tools musl-dev
-          sudo apt remove -y gcc-multilib gcc-13-aarch64-linux-gnu || true
-          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/gcc
-          sudo ln -sf /usr/bin/musl-g++ /usr/local/bin/g++
-
-      # 核心修复：用管道强制输入 "y" 回答 Xmake 交互询问
       - name: Build & Package Project
         run: |
-          # 提取纯架构
-          ARCH_PURE="${{ matrix.arch }}"
-          ARCH_PURE=${ARCH_PURE/-musl/}
-          
-          # 清理缓存
-          xmake clean -a
-          xmake f --clean
-          
-          if [[ "${{ matrix.arch }}" == *-musl ]]; then
-            # 指定编译器和静态链接标志
-            export CC=musl-gcc
-            export CXX=musl-g++
-            export CFLAGS="-static -fPIC -Os"
-            export CXXFLAGS="-static -fPIC -Os"
-            export LDFLAGS="-static -static-libgcc -static-libstdc++ -lm -lc -lpcre2-8"
-            
-            # 关键：echo y | 强制回答交互询问 + --yes 双重保险
-            echo y | xmake f --yes \
-              --plat=linux \
-              --arch=${ARCH_PURE} \
-              --mode=release \
-              --cxflags="${CFLAGS} ${CXXFLAGS}" \
-              --ldflags="${LDFLAGS}" \
-              --linkdirs="/usr/lib/musl:/usr/lib/x86_64-linux-musl:/usr/lib/aarch64-linux-musl"
-          
-            # 强制安装依赖（管道输入 y）
-            echo y | xmake require --yes --verbose
-            
-            # 构建（管道输入 y）
-            echo y | xmake build --yes --verbose
-            
-            # 打包
-            echo y | xmake package --yes --verbose
-          else
-            # 原有逻辑（同样加管道）
-            echo y | xmake f --yes --mode=release
-            echo y | xmake require --yes
-            echo y | xmake build --yes --verbose
-            echo y | xmake package --yes --verbose
+          if [ "${{ matrix.platform }}" = "Linux-musl" ]; then
+            xmake f --toolchain=musl --arch=x86_64
           fi
-
-      - name: Verify Static Link (musl only)
-        if: contains(matrix.arch, 'musl')
-        run: |
-          BIN_PATH=$(find build/linux/${ARCH_PURE}/release -name "${PROJECT_NAME}" -type f)
-          if [ -f "${BIN_PATH}" ]; then
-            echo "✅ Binary found: ${BIN_PATH}"
-            file ${BIN_PATH} | grep -i "statically linked" && echo "✅ Static link success"
-            ldd ${BIN_PATH} || echo "✅ No dynamic dependencies (musl static confirmed)"
-          else
-            echo "❌ Binary not found!"
-            exit 1
-          fi
+          xmake package --yes --verbose
 
       - name: Upload Artifact
-        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        # 始终上传 Artifact（方便后续处理或下载）
         uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.platform }}-${{ matrix.arch }}
@@ -170,11 +102,13 @@ jobs:
             build/packages/*.zip
             build/packages/*.tar.gz
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
           compression-level: 9
 
   release:
-    if: ${{ (github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.deploy_type == 'release') }}
+    # 根据输入参数决定是否执行 release 步骤
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 
+        (github.event.inputs.upload_to_release == 'true' || github.event_name == 'push')
     name: Upload to GitHub Release
     needs: build
     runs-on: ubuntu-latest
@@ -207,11 +141,7 @@ jobs:
         with:
           tag_name: dev
           name: Continuous dev Build
-          body: |
-            Automated build from commit ${{ github.sha }}
-            - Added Linux musl static build (x64/arm64)
-            - Fixed: Force input "y" via pipe to bypass Xmake interactive prompt
-            - Deploy type: ${{ github.event_name == 'push' && 'auto-release (push)' || inputs.deploy_type }}
+          body: Automated build from commit ${{ github.sha }}
           prerelease: true
           preserve_order: true
           files: |
@@ -221,7 +151,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   format:
-    if: ${{ (github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.deploy_type == 'release') }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     name: Auto Format Code
     needs: release
     runs-on: ubuntu-latest
@@ -234,7 +164,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.head_ref }}
 
       - name: Setup Xmake
         uses: xmake-io/github-action-setup-xmake@v1
