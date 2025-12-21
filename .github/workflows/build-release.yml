@@ -13,16 +13,15 @@ on:
       - "src/**/*.c"
       - "src/**/*.h"
   workflow_dispatch:
-    # 新增：手动触发时的参数选择
     inputs:
       deploy_type:
         description: '部署类型'
         required: true
-        default: 'artifact_only'  # 默认仅生成 Artifact
+        default: 'artifact_only'
         type: choice
         options:
-          - artifact_only        # 仅上传 Artifact（不发布 Release）
-          - release              # 上传 Artifact + 发布到 GitHub Release
+          - artifact_only
+          - release
 
 concurrency:
   group: "build-release"
@@ -54,7 +53,7 @@ jobs:
           - os: ubuntu-24.04-arm
             platform: Linux
             arch: arm64-musl
-          # 原有 macOS/Windows 版本（保持不变）
+          # 原有 macOS/Windows 版本
           - os: macos-15-intel
             platform: macOS
             arch: Intel
@@ -96,15 +95,18 @@ jobs:
             ln -s /usr/bin/aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-musl-gcc || true
           fi
 
-      # 调整构建命令：区分 musl/普通版本，配置 Xmake 静态编译
+      # 修正：用 Bash 替换处理 arch，移除 GitHub Actions 表达式的 replace 函数
       - name: Build & Package Project
         run: |
+          # 提取纯架构（移除 -musl 后缀）
+          ARCH_PURE="${{ matrix.arch }}"
+          ARCH_PURE=${ARCH_PURE/-musl/}
+          
           # 针对 musl 架构配置 Xmake 编译参数
           if [[ "${{ matrix.arch }}" == *-musl ]]; then
-            # 设置 musl 工具链 + 静态链接
             xmake f \
               --plat=linux \
-              --arch=${{ replace(matrix.arch, '-musl', '') }} \
+              --arch=${ARCH_PURE} \
               --toolchain=musl \
               --static=y \
               --mode=release
@@ -112,12 +114,12 @@ jobs:
             # 原有普通编译逻辑
             xmake f --mode=release
           fi
+          
           # 执行构建并打包
           xmake build --verbose
           xmake package --yes --verbose
 
       - name: Upload Artifact
-        # 条件：push 事件 / 手动触发（无论选择哪种部署类型都上传 Artifact）
         if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
         with:
@@ -126,13 +128,10 @@ jobs:
             build/packages/*.zip
             build/packages/*.tar.gz
           if-no-files-found: error
-          retention-days: 7  # 延长 Artifact 保留时间（可选）
+          retention-days: 7
           compression-level: 9
 
   release:
-    # 条件控制：
-    # 1. push 事件：默认发布 Release（保留原有逻辑）
-    # 2. 手动触发：仅当选择 deploy_type=release 时才执行
     if: ${{ (github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.deploy_type == 'release') }}
     name: Upload to GitHub Release
     needs: build
@@ -179,7 +178,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   format:
-    # 条件：仅当 Release 执行时才运行（依赖 release job）
     if: ${{ (github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.deploy_type == 'release') }}
     name: Auto Format Code
     needs: release
@@ -193,7 +191,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.head_ref || github.ref_name }}  # 兼容 push/workflow_dispatch 事件
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Setup Xmake
         uses: xmake-io/github-action-setup-xmake@v1
