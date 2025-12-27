@@ -12,7 +12,7 @@ target("cli")
     set_languages("c11")
     set_version("2.0.0", {build = "%Y%m%d%H%M"})
 
-    if os.getenv("XMAKE_BUILD_MUSL") == "1" then
+    if has_config("musl") then
         add_cflags("-static", "-fuse-ld=musl")
         add_ldflags("-static", "-fuse-ld=musl")
         add_cxflags("-static", "-fuse-ld=musl")
